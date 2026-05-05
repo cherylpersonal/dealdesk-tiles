@@ -28,7 +28,7 @@ def parse_daf(file) -> Tuple[pd.DataFrame, List[str]]:
         df["sku_code"] = df["sku_code"].str.strip().str.upper()
 
     # Handle duplicate SKUs: sum boxes, weighted average nef
-    if df.duplicated("sku_code").any():
+    if "sku_code" in df.columns and df.duplicated("sku_code").any():
         warnings.append(
             "Duplicate SKU codes detected — aggregating: boxes summed, "
             "NEF weighted-averaged by boxes."
@@ -67,7 +67,7 @@ def parse_cost_sheet(file) -> Tuple[pd.DataFrame, List[str]]:
     if "sku_code" in df.columns:
         df["sku_code"] = df["sku_code"].str.strip().str.upper()
 
-    if df.duplicated("sku_code").any():
+    if "sku_code" in df.columns and df.duplicated("sku_code").any():
         warnings.append(
             "Duplicate SKU codes in cost sheet — keeping first occurrence per SKU."
         )
