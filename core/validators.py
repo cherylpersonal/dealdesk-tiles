@@ -13,7 +13,10 @@ def validate_daf(df: pd.DataFrame) -> Tuple[bool, List[str]]:
     errors = []
     missing = [c for c in DAF_REQUIRED_COLS if c not in df.columns]
     if missing:
-        errors.append(f"Missing required columns: {missing}")
+        errors.append(
+            f"Missing required columns: {missing}. "
+            f"Columns found in your file: {list(df.columns)}"
+        )
         return False, errors
 
     for col in ["boxes", "nef"]:
@@ -39,7 +42,10 @@ def validate_cost_sheet(df: pd.DataFrame) -> Tuple[bool, List[str]]:
     errors = []
     missing = [c for c in COST_REQUIRED_COLS if c not in df.columns]
     if missing:
-        errors.append(f"Missing required columns: {missing}")
+        errors.append(
+            f"Missing required columns: {missing}. "
+            f"Columns found in your file: {list(df.columns)}"
+        )
         return False, errors
 
     for col in ["area_per_box", "buying_price"]:
