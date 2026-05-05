@@ -3,20 +3,26 @@ from typing import Tuple, List
 
 
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Strip whitespace and lowercase all column names."""
     df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
     return df
 
 
+def _find_header_row(file, hint_cols: list, max_scan: int = 10) -> int:
+    """Return the 0-based row index that contains the most hint_cols after normalisation."""
+    preview = pd.read_excel(file, header=None, nrows=max_scan, dtype=str)
+    best_row, best_score = 0, 0
+    for i, row in preview.iterrows():
+        normalised = [str(v).strip().lower().replace(" ", "_") for v in row]
+        score = sum(1 for c in hint_cols if c in normalised)
+        if score > best_score:
+            best_score, best_row = score, i
+    return best_row
+
+
 def parse_daf(file) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Read DAF Excel file.
-    Returns (dataframe, warnings_list).
-    Strips whitespace from sku_code and normalises it to uppercase.
-    Aggregates duplicate SKUs by summing boxes and averaging nef (weighted).
-    """
     warnings = []
-    df = pd.read_excel(file, dtype=str)
+    header_row = _find_header_row(file, ["sku_code", "boxes", "nef"])
+    df = pd.read_excel(file, header=header_row, dtype=str)
     df = _normalise_columns(df)
 
     numeric_cols = ["boxes", "nef", "list_value"]
@@ -52,12 +58,9 @@ def parse_daf(file) -> Tuple[pd.DataFrame, List[str]]:
 
 
 def parse_cost_sheet(file) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Read cost sheet Excel file.
-    Returns (dataframe, warnings_list).
-    """
     warnings = []
-    df = pd.read_excel(file, dtype=str)
+    header_row = _find_header_row(file, ["sku_code", "area_per_box", "buying_price"])
+    df = pd.read_excel(file, header=header_row, dtype=str)
     df = _normalise_columns(df)
 
     for col in ["area_per_box", "buying_price"]:
