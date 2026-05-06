@@ -31,6 +31,123 @@ Private Const CLR_GRN  As Long = 13828828   ' margin >= 10%
 
 
 ' =====================================================================
+'  COST SHEET UPDATES
+' =====================================================================
+
+' Replace CostData entirely from a new Excel file (same format as original cost sheet)
+Sub UpdateCostData()
+    Dim pw As String
+    pw = InputBox("Enter the Deal Desk password to update the cost sheet:", "Authentication")
+    If pw <> SHEET_PW Then
+        MsgBox "Incorrect password.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim newPath As String
+    newPath = BrowseForFile()
+    If newPath = "" Then Exit Sub
+
+    Application.ScreenUpdating = False
+
+    ' Open new cost sheet
+    Dim newWB As Workbook
+    On Error GoTo UpdateErr
+    Set newWB = Workbooks.Open(newPath, ReadOnly:=True)
+
+    ' Find its data sheet and header row
+    Dim srcWS As Worksheet
+    Dim srcHRow As Long
+    Dim ws As Worksheet
+    For Each ws In newWB.Worksheets
+        Dim r As Long
+        r = FindHeaderRowInSheet(ws, 50)
+        If r > 0 Then
+            Set srcWS = ws
+            srcHRow = r
+            Exit For
+        End If
+    Next ws
+
+    If srcWS Is Nothing Then
+        MsgBox "Could not find data in the selected file.", vbExclamation
+        newWB.Close False
+        GoTo UpdateCleanup
+    End If
+
+    ' Reveal and unprotect CostData
+    Dim cWS As Worksheet
+    ThisWorkbook.Sheets(COST_SHEET).Visible = xlSheetVisible
+    Set cWS = ThisWorkbook.Sheets(COST_SHEET)
+    cWS.Unprotect Password:=SHEET_PW
+
+    ' Clear existing data (keep sheet, remove all content)
+    cWS.Cells.Clear
+
+    ' Copy everything from source header row down
+    Dim lastSrcRow As Long
+    Dim lastSrcCol As Long
+    lastSrcRow = srcWS.Cells(srcWS.Rows.Count, 1).End(xlUp).Row
+    lastSrcCol = srcWS.Cells(srcHRow, srcWS.Columns.Count).End(xlToLeft).Column
+
+    srcWS.Range(srcWS.Cells(srcHRow, 1), srcWS.Cells(lastSrcRow, lastSrcCol)).Copy
+    cWS.Cells(1, 1).PasteSpecial xlPasteValues
+    cWS.Cells(1, 1).PasteSpecial xlPasteFormats
+    Application.CutCopyMode = False
+
+    newWB.Close False
+
+    ' Re-protect and re-hide
+    cWS.Protect Password:=SHEET_PW, DrawingObjects:=True, Contents:=True, Scenarios:=True
+    ThisWorkbook.Sheets(COST_SHEET).Visible = xlSheetVeryHidden
+
+    ThisWorkbook.Save
+    Application.ScreenUpdating = True
+
+    MsgBox "Cost sheet updated successfully." & vbCrLf & _
+           CStr(lastSrcRow - srcHRow) & " SKU rows imported.", vbInformation, "Update Complete"
+    Exit Sub
+
+UpdateErr:
+    MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical
+UpdateCleanup:
+    On Error Resume Next
+    If Not cWS Is Nothing Then
+        cWS.Protect Password:=SHEET_PW, Contents:=True
+        ThisWorkbook.Sheets(COST_SHEET).Visible = xlSheetVeryHidden
+    End If
+    Application.ScreenUpdating = True
+End Sub
+
+' Reveal CostData for manual editing — call LockCostData when finished
+Sub EditCostData()
+    Dim pw As String
+    pw = InputBox("Enter the Deal Desk password:", "Authentication")
+    If pw <> SHEET_PW Then
+        MsgBox "Incorrect password.", vbExclamation
+        Exit Sub
+    End If
+    ThisWorkbook.Sheets(COST_SHEET).Visible = xlSheetVisible
+    ThisWorkbook.Sheets(COST_SHEET).Unprotect Password:=SHEET_PW
+    ThisWorkbook.Sheets(COST_SHEET).Activate
+    MsgBox "Cost sheet is now visible and unlocked." & vbCrLf & vbCrLf & _
+           "Make your changes, then run the LockCostData macro when done.", _
+           vbInformation, "Cost Sheet Unlocked"
+End Sub
+
+' Re-hide and re-protect CostData after manual editing
+Sub LockCostData()
+    On Error Resume Next
+    Dim cWS As Worksheet
+    Set cWS = ThisWorkbook.Sheets(COST_SHEET)
+    cWS.Protect Password:=SHEET_PW, DrawingObjects:=True, Contents:=True, Scenarios:=True
+    cWS.Visible = xlSheetVeryHidden
+    ThisWorkbook.Save
+    On Error GoTo 0
+    MsgBox "Cost sheet has been locked and hidden.", vbInformation, "Done"
+End Sub
+
+
+' =====================================================================
 '  RUN ONCE AFTER IMPORT
 ' =====================================================================
 Sub SetupProtection()
