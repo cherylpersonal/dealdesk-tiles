@@ -19,7 +19,7 @@ Private Const CEO_OVR_THRESH As Double = 0.1    ' overall margin < 10% -> CEO
 Private Const PM_SKU_THRESH  As Double = 0.1    ' any SKU margin < 10% -> PM Head
 Private Const PM_OVR_THRESH  As Double = 0.2    ' overall margin < 20% -> PM Head
 
-' Colours
+' Colours (Long = RGB with R and B swapped as Excel stores it)
 Private Const CLR_HDR  As Long = 15132390   ' #E8F0FE  light blue
 Private Const CLR_TOT  As Long = 13424076   ' #FFF3CD  amber
 Private Const CLR_DD   As Long = 13828828   ' #D4EDDA  green
@@ -31,7 +31,7 @@ Private Const CLR_GRN  As Long = 13828828   ' margin >= 10%
 
 
 ' =====================================================================
-'  RUN ONCE AFTER IMPORT — hides and protects the CostData sheet
+'  RUN ONCE AFTER IMPORT
 ' =====================================================================
 Sub SetupProtection()
     On Error Resume Next
@@ -66,19 +66,19 @@ Sub ProcessDAF()
     On Error GoTo ErrHandler
     Set dafWB = Workbooks.Open(dafPath, ReadOnly:=False)
 
-    ' ── Find DAF data sheet & header row ─────────────────────────────
+    ' ── Find the SKU table sheet and header row ───────────────────────
     Dim dataWS As Worksheet
     Dim hRow   As Long
     Set dataWS = FindDataSheet(dafWB, hRow)
 
     If dataWS Is Nothing Then
         MsgBox "Cannot find DAF data." & vbCrLf & _
-               "The file must contain columns: sku_code (or Material), boxes, nef", vbExclamation
+               "The file must contain a row with: sku_code, boxes, nef", vbExclamation
         dafWB.Close False
         GoTo Cleanup
     End If
 
-    ' ── Map DAF columns ───────────────────────────────────────────────
+    ' ── Map SKU table columns ─────────────────────────────────────────
     Dim dCols As Object
     Set dCols = MapCols(dataWS, hRow)
 
@@ -93,18 +93,29 @@ Sub ProcessDAF()
         GoTo Cleanup
     End If
 
-    ' ── Temporarily reveal cost sheet ────────────────────────────────
+    ' Filter out zero/empty SKU rows
+    n = CountValidRows(dataWS, hRow, dCols("sku_code"), n)
+    If n = 0 Then
+        MsgBox "No valid SKU rows found (all appear to be blank or zero).", vbExclamation
+        dafWB.Close False
+        GoTo Cleanup
+    End If
+
+    ' ── Extract form-level meta (from the header area above the table) ─
+    Dim meta(8) As String
+    ReadFormMeta dataWS, hRow, meta
+
+    ' ── Reveal cost sheet ─────────────────────────────────────────────
     Dim cWS As Worksheet
     ThisWorkbook.Sheets(COST_SHEET).Visible = xlSheetVisible
     Set cWS = ThisWorkbook.Sheets(COST_SHEET)
     cWS.Unprotect Password:=SHEET_PW
 
     Dim cHRow  As Long
-    cHRow = FindHeaderRowInSheet(cWS, 10)
+    cHRow = FindHeaderRowInSheet(cWS, 50)
     Dim cCols As Object
     Set cCols = MapCols(cWS, cHRow)
 
-    ' Cost sheet column aliases
     Dim skuCI   As Long
     Dim priceCI As Long
     Dim areaCI  As Long
@@ -120,15 +131,13 @@ Sub ProcessDAF()
         GoTo Cleanup
     End If
 
-    ' ── Build cost lookup dict: UPPER(sku) -> {area, price} ──────────
     Dim cLookup As Object
     Set cLookup = BuildCostLookup(cWS, cHRow, skuCI, priceCI, areaCI)
 
-    ' Re-protect and hide cost sheet
     cWS.Protect Password:=SHEET_PW, Contents:=True
     ThisWorkbook.Sheets(COST_SHEET).Visible = xlSheetVeryHidden
 
-    ' ── Read DAF rows ─────────────────────────────────────────────────
+    ' ── Read SKU rows ─────────────────────────────────────────────────
     Dim sku()  As String
     Dim bx()   As Double
     Dim nf()   As Double
@@ -147,46 +156,41 @@ Sub ProcessDAF()
     ReDim ta(1 To n):   ReDim rv(1 To n):  ReDim ct(1 To n)
     ReDim mv(1 To n):   ReDim mp(1 To n):  ReDim ok(1 To n)
 
-    Dim meta(8) As String
-
+    Dim idx As Long
+    idx = 0
     Dim i As Long
-    For i = 1 To n
+    For i = 1 To lastRow - hRow
         Dim dr As Long
         dr = hRow + i
+        Dim rawSku As String
+        rawSku = Trim(CStr(dataWS.Cells(dr, dCols("sku_code")).Value))
+        If rawSku = "" Or rawSku = "0" Then GoTo NextRow
 
-        sku(i) = UCase(Trim(dataWS.Cells(dr, dCols("sku_code")).Value))
-        bx(i)  = SafeD(dataWS.Cells(dr, dCols("boxes")).Value)
-        nf(i)  = SafeD(dataWS.Cells(dr, dCols("nef")).Value)
-        If dCols.Exists("list_value") Then
-            lv(i) = SafeD(dataWS.Cells(dr, dCols("list_value")).Value)
+        idx = idx + 1
+        sku(idx) = UCase(rawSku)
+        bx(idx)  = SafeD(dataWS.Cells(dr, dCols("boxes")).Value)
+        nf(idx)  = SafeD(dataWS.Cells(dr, dCols("nef")).Value)
+        If dCols.Exists("list_price") Then
+            lv(idx) = SafeD(dataWS.Cells(dr, dCols("list_price")).Value)
+        ElseIf dCols.Exists("list_price_") Then
+            lv(idx) = SafeD(dataWS.Cells(dr, dCols("list_price_")).Value)
         End If
 
-        If i = 1 Then
-            meta(0) = CellVal(dataWS, dr, dCols, Array("daf_ref_no", "daf_ref_nometa", "daf_ref"))
-            meta(1) = CellVal(dataWS, dr, dCols, Array("lob"))
-            meta(2) = CellVal(dataWS, dr, dCols, Array("channel"))
-            meta(3) = CellVal(dataWS, dr, dCols, Array("state"))
-            meta(4) = CellVal(dataWS, dr, dCols, Array("project_name"))
-            meta(5) = CellVal(dataWS, dr, dCols, Array("developer_name"))
-            meta(6) = CellVal(dataWS, dr, dCols, Array("dealer_name"))
-            meta(7) = CellVal(dataWS, dr, dCols, Array("zonal_coordinator"))
-            meta(8) = CellVal(dataWS, dr, dCols, Array("submitted_date"))
-        End If
-
-        If cLookup.Exists(sku(i)) Then
+        If cLookup.Exists(sku(idx)) Then
             Dim info As Variant
-            info   = cLookup(sku(i))
-            apb(i) = info(0)
-            bp(i)  = info(1)
-            If bx(i) > 0 And apb(i) > 0 Then
-                ta(i)  = bx(i) * apb(i)
-                rv(i)  = nf(i) * ta(i)
-                ct(i)  = bp(i) * ta(i)
-                mv(i)  = rv(i) - ct(i)
-                If rv(i) > 0 Then mp(i) = mv(i) / rv(i)
-                ok(i) = True
+            info    = cLookup(sku(idx))
+            apb(idx) = info(0)
+            bp(idx)  = info(1)
+            If bx(idx) > 0 And apb(idx) > 0 Then
+                ta(idx)  = bx(idx) * apb(idx)
+                rv(idx)  = nf(idx) * ta(idx)
+                ct(idx)  = bp(idx) * ta(idx)
+                mv(idx)  = rv(idx) - ct(idx)
+                If rv(idx) > 0 Then mp(idx) = mv(idx) / rv(idx)
+                ok(idx) = True
             End If
         End If
+NextRow:
     Next i
 
     ' ── Totals ───────────────────────────────────────────────────────
@@ -229,7 +233,7 @@ Sub ProcessDAF()
 
 ErrHandler:
     On Error Resume Next
-    cWS.Protect Password:=SHEET_PW, Contents:=True
+    If Not cWS Is Nothing Then cWS.Protect Password:=SHEET_PW, Contents:=True
     ThisWorkbook.Sheets(COST_SHEET).Visible = xlSheetVeryHidden
     On Error GoTo 0
     MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical, "DAF Processor"
@@ -241,7 +245,67 @@ End Sub
 
 
 ' =====================================================================
-'  HELPERS
+'  META EXTRACTION FROM FORM LAYOUT
+'  Searches rows above the SKU table for labelled fields.
+'  meta(0)=DAF Ref, (1)=LOB, (2)=Channel, (3)=State, (4)=Project,
+'         (5)=Developer, (6)=Dealer, (7)=Zonal, (8)=Request Date
+' =====================================================================
+Private Sub ReadFormMeta(ws As Worksheet, hRow As Long, meta() As String)
+    Dim scanTo As Long
+    scanTo = hRow - 1
+
+    meta(0) = FindLabelBelow(ws, "DAF Reference No", scanTo)
+    meta(1) = LobFromSheetName(ws.Name)
+    meta(2) = FindLabelBelow(ws, "Dist. Channel", scanTo)
+    meta(3) = FindLabelBelow(ws, "State", scanTo)
+    meta(4) = FindLabelBelow(ws, "Project Name", scanTo)
+    meta(5) = FindLabelBelow(ws, "Developer Name", scanTo)
+    meta(6) = FindLabelBelow(ws, "Dealer Name", scanTo)
+    meta(7) = FindLabelBelow(ws, "Zonal", scanTo)
+    meta(8) = FindLabelBelow(ws, "Request Date", scanTo)
+
+    ' Fallback: if Request Date still empty, try Submitted Date
+    If Len(Trim(meta(8))) = 0 Then
+        meta(8) = FindLabelBelow(ws, "Submitted", scanTo)
+    End If
+End Sub
+
+' Scans rows 1..maxRow for a cell containing labelText (partial match),
+' then returns the value in the cell directly below it.
+' Skips placeholder-style values (starts with "Auto:" or is pure zeros).
+Private Function FindLabelBelow(ws As Worksheet, labelText As String, maxRow As Long) As String
+    Dim r As Long, c As Long
+    Dim lastCol As Long
+    lastCol = ws.UsedRange.Columns.Count
+    For r = 1 To maxRow
+        For c = 1 To lastCol
+            If InStr(1, CStr(ws.Cells(r, c).Value), labelText, vbTextCompare) > 0 Then
+                Dim v As String
+                v = Trim(CStr(ws.Cells(r + 1, c).Value))
+                ' Skip placeholders
+                If Len(v) > 0 And Left(v, 5) <> "Auto:" And v <> "0" Then
+                    FindLabelBelow = v
+                    Exit Function
+                End If
+            End If
+        Next c
+    Next r
+End Function
+
+' Extracts LOB from sheet name: "DAF - Tiles" -> "Tiles"
+Private Function LobFromSheetName(sheetName As String) As String
+    Dim pos As Long
+    pos = InStr(sheetName, " - ")
+    If pos > 0 Then
+        LobFromSheetName = Trim(Mid(sheetName, pos + 3))
+    Else
+        LobFromSheetName = sheetName
+    End If
+End Function
+
+
+' =====================================================================
+'  SHEET / HEADER DETECTION
 ' =====================================================================
 
 Private Function BrowseForFile() As String
@@ -256,12 +320,12 @@ Private Function BrowseForFile() As String
     End With
 End Function
 
-' Scans all sheets in a workbook for one that looks like a DAF data sheet
+' Scans all sheets for one containing sku_code + boxes + nef headers
 Private Function FindDataSheet(wb As Workbook, ByRef hRow As Long) As Worksheet
     Dim ws As Worksheet
     For Each ws In wb.Worksheets
         Dim r As Long
-        r = FindHeaderRowInSheet(ws, 10)
+        r = FindHeaderRowInSheet(ws, 50)
         If r > 0 Then
             Dim cols As Object
             Set cols = MapCols(ws, r)
@@ -274,15 +338,17 @@ Private Function FindDataSheet(wb As Workbook, ByRef hRow As Long) As Worksheet
     Next ws
 End Function
 
-' Returns the first row (1-based) where 2+ known DAF/cost keywords appear
+' Returns 1-based row index where 2+ hint keywords appear; 0 if not found
 Private Function FindHeaderRowInSheet(ws As Worksheet, maxScan As Long) As Long
     Dim hints As Variant
     hints = Array("sku_code", "sku", "material", "boxes", "nef", "buying_price", _
                   "purchase_price", "area_per_box", "sft", "channel", "lob")
-    Dim r As Long, c As Long
+    Dim lastRow As Long
+    lastRow = Application.WorksheetFunction.Min(ws.UsedRange.Rows.Count, maxScan)
     Dim lastCol As Long
     lastCol = ws.UsedRange.Columns.Count
-    For r = 1 To maxScan
+    Dim r As Long, c As Long
+    For r = 1 To lastRow
         Dim score As Long
         score = 0
         For c = 1 To lastCol
@@ -303,7 +369,23 @@ Private Function FindHeaderRowInSheet(ws As Worksheet, maxScan As Long) As Long
     Next r
 End Function
 
-' Returns a Scripting.Dictionary: normalised_col_name -> column index
+' Count non-blank, non-zero SKU rows
+Private Function CountValidRows(ws As Worksheet, hRow As Long, skuCol As Long, rawCount As Long) As Long
+    Dim i As Long, cnt As Long
+    For i = 1 To rawCount
+        Dim v As String
+        v = Trim(CStr(ws.Cells(hRow + i, skuCol).Value))
+        If v <> "" And v <> "0" Then cnt = cnt + 1
+    Next i
+    CountValidRows = cnt
+End Function
+
+
+' =====================================================================
+'  COLUMN HELPERS
+' =====================================================================
+
+' Returns Scripting.Dictionary: normalised_col_name -> column index
 Private Function MapCols(ws As Worksheet, hRow As Long) As Object
     Dim d As Object
     Set d = CreateObject("Scripting.Dictionary")
@@ -319,12 +401,15 @@ Private Function MapCols(ws As Worksheet, hRow As Long) As Object
     Set MapCols = d
 End Function
 
-' lowercase + trim + spaces->underscores
+' lowercase + trim + spaces->underscores + strip newlines
 Private Function NormKey(s As String) As String
-    NormKey = LCase(Trim(Replace(s, " ", "_")))
+    Dim tmp As String
+    tmp = Replace(s, Chr(10), "_")
+    tmp = Replace(tmp, Chr(13), "")
+    NormKey = LCase(Trim(Replace(tmp, " ", "_")))
 End Function
 
-' Returns column index of first matching alias; 0 if none found
+' Returns column index of first alias found in cols dict; 0 if none
 Private Function FirstExisting(cols As Object, aliases As Variant) As Long
     Dim a As Variant
     For Each a In aliases
@@ -335,7 +420,7 @@ Private Function FirstExisting(cols As Object, aliases As Variant) As Long
     Next a
 End Function
 
-' Returns cell value string for first alias found in cols dict
+' Returns cell string value for first alias found
 Private Function CellVal(ws As Worksheet, r As Long, cols As Object, aliases As Variant) As String
     Dim a As Variant
     For Each a In aliases
@@ -346,7 +431,7 @@ Private Function CellVal(ws As Worksheet, r As Long, cols As Object, aliases As 
     Next a
 End Function
 
-' Build lookup dict: UPPER(sku) -> Array(area_per_box, buying_price)
+' Builds lookup dict: UPPER(sku) -> Array(area_per_box, buying_price)
 Private Function BuildCostLookup(ws As Worksheet, hRow As Long, _
                                   skuCI As Long, priceCI As Long, areaCI As Long) As Object
     Dim d As Object
@@ -364,12 +449,14 @@ Private Function BuildCostLookup(ws As Worksheet, hRow As Long, _
     Set BuildCostLookup = d
 End Function
 
-' Safe numeric conversion
 Private Function SafeD(v As Variant) As Double
     If IsNumeric(v) Then SafeD = CDbl(v) Else SafeD = 0
 End Function
 
-' Apply approval matrix; returns level and populates reason string
+
+' =====================================================================
+'  APPROVAL LOGIC
+' =====================================================================
 Private Function CalcApproval(n As Long, sku() As String, mp() As Double, _
                                ok() As Boolean, ovMP As Double, ByRef reason As String) As String
     Dim below5  As String
@@ -391,18 +478,14 @@ Private Function CalcApproval(n As Long, sku() As String, mp() As Double, _
     reason = ""
     If Len(below5) > 0 Or ovMP < CEO_OVR_THRESH Then
         CalcApproval = "CEO"
-        If Len(below5) > 0 Then
-            reason = "SKU margin < 5%: " & below5
-        End If
+        If Len(below5) > 0 Then reason = "SKU margin < 5%: " & below5
         If ovMP < CEO_OVR_THRESH Then
             If Len(reason) > 0 Then reason = reason & "  |  "
             reason = reason & "Overall margin " & Format(ovMP * 100, "0.0") & "% < 10%"
         End If
     ElseIf Len(below10) > 0 Or ovMP < PM_OVR_THRESH Then
         CalcApproval = "PM Head"
-        If Len(below10) > 0 Then
-            reason = "SKU margin < 10%: " & below10
-        End If
+        If Len(below10) > 0 Then reason = "SKU margin < 10%: " & below10
         If ovMP < PM_OVR_THRESH Then
             If Len(reason) > 0 Then reason = reason & "  |  "
             reason = reason & "Overall margin " & Format(ovMP * 100, "0.0") & "% < 20%"
@@ -413,7 +496,6 @@ Private Function CalcApproval(n As Long, sku() As String, mp() As Double, _
     End If
 End Function
 
-' Returns the approval colour constant for a given level
 Private Function ApprovalColour(lvl As String) As Long
     Select Case lvl
         Case "Deal Desk": ApprovalColour = CLR_DD
@@ -425,7 +507,7 @@ End Function
 
 
 ' =====================================================================
-'  WRITE CALCULATIONS SHEET  (inside the DAF workbook)
+'  WRITE CALCULATIONS SHEET  (into the DAF workbook)
 ' =====================================================================
 Private Sub WriteCalcSheet(dafWB As Workbook, n As Long, _
     sku() As String, bx() As Double, nf() As Double, apb() As Double, bp() As Double, _
@@ -433,7 +515,6 @@ Private Sub WriteCalcSheet(dafWB As Workbook, n As Long, _
     tBx As Double, tTA As Double, tRev As Double, tCst As Double, tMV As Double, ovMP As Double, _
     appLvl As String, appReason As String)
 
-    ' Remove existing Calculations sheet
     Application.DisplayAlerts = False
     On Error Resume Next
     dafWB.Sheets("Calculations").Delete
@@ -444,7 +525,7 @@ Private Sub WriteCalcSheet(dafWB As Workbook, n As Long, _
     Set ws = dafWB.Sheets.Add(After:=dafWB.Sheets(dafWB.Sheets.Count))
     ws.Name = "Calculations"
 
-    ' ── Column headers ─────────────────────────────────────────────────
+    ' ── Headers ────────────────────────────────────────────────────────
     Dim hdrs As Variant
     hdrs = Array("SKU Code", "Boxes", "NEF (per sqft)", "Area per Box (sqft)", _
                  "Buying Price (per sqft)", "Total Area (sqft)", "Revenue", _
@@ -492,7 +573,7 @@ Private Sub WriteCalcSheet(dafWB As Workbook, n As Long, _
         Else
             ws.Cells(r, 6).Value = "Not in cost sheet"
             ws.Cells(r, 6).Font.Italic = True
-            ws.Cells(r, 6).Font.Color = RGB(100, 100, 100)
+            ws.Cells(r, 6).Font.Color = RGB(130, 130, 130)
         End If
     Next i
 
@@ -543,7 +624,7 @@ Private Sub WriteCalcSheet(dafWB As Workbook, n As Long, _
 
     ' ── Column widths ──────────────────────────────────────────────────
     Dim widths As Variant
-    widths = Array(20, 8, 15, 18, 20, 16, 14, 14, 15, 12)
+    widths = Array(22, 8, 15, 18, 20, 16, 14, 14, 15, 12)
     For c = 1 To 10
         ws.Columns(c).ColumnWidth = widths(c - 1)
     Next c
@@ -558,7 +639,7 @@ End Sub
 
 
 ' =====================================================================
-'  APPEND TRACKER ROW  (into Deal Desk Tracker sheet of this workbook)
+'  APPEND TRACKER ROW
 ' =====================================================================
 Private Sub AppendTracker(meta() As String, tLV As Double, tRev As Double, _
                            tMV As Double, ovMP As Double, appLvl As String)
@@ -568,7 +649,6 @@ Private Sub AppendTracker(meta() As String, tLV As Double, tRev As Double, _
     Dim nextRow As Long
     nextRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
 
-    ' 6-hr due date from submitted_date
     Dim sixHrStr As String
     If Len(Trim(meta(8))) > 0 Then
         On Error Resume Next
@@ -581,49 +661,45 @@ Private Sub AppendTracker(meta() As String, tLV As Double, tRev As Double, _
         On Error GoTo 0
     End If
 
-    ' Avg discount %
     Dim avgDiscStr As String
     If tLV > 0 Then
         avgDiscStr = Format((tLV - tRev) / tLV * 100, "0.00") & "%"
     End If
 
-    ' Write values in tracker column order (must match TRACKER_HEADERS in build_master.py)
     Dim vals(22) As Variant
-    vals(0)  = meta(0)         ' DAF Reference No.
-    vals(1)  = meta(1)         ' LOB
-    vals(2)  = meta(2)         ' Channel
-    vals(3)  = meta(3)         ' State
-    vals(4)  = meta(4)         ' Project Name
-    vals(5)  = meta(5)         ' Developer Name
-    vals(6)  = meta(6)         ' Dealer Name
-    vals(7)  = meta(7)         ' Zonal Coordinator
-    vals(8)  = meta(8)         ' Submitted Date
-    vals(9)  = ""              ' DD Received Date    (manual)
-    vals(10) = sixHrStr        ' 6-Hr Due Date
-    vals(11) = ""              ' Response Date       (manual)
-    vals(12) = ""              ' TAT                 (manual)
-    vals(13) = ""              ' SLA Met             (manual)
-    vals(14) = ""              ' Quote Version       (manual)
-    vals(15) = appLvl          ' Approval Level
-    vals(16) = ""              ' Approver Name       (manual)
-    vals(17) = ""              ' Approval Status     (manual)
-    vals(18) = ""              ' Approval Date       (manual)
-    vals(19) = tLV             ' List Value
-    vals(20) = Round(tRev, 2)  ' Deal Value
-    vals(21) = avgDiscStr      ' Avg Discount %
-    vals(22) = Format(ovMP * 100, "0.00") & "%"  ' Deal Margin %
+    vals(0)  = meta(0)
+    vals(1)  = meta(1)
+    vals(2)  = meta(2)
+    vals(3)  = meta(3)
+    vals(4)  = meta(4)
+    vals(5)  = meta(5)
+    vals(6)  = meta(6)
+    vals(7)  = meta(7)
+    vals(8)  = meta(8)
+    vals(9)  = ""
+    vals(10) = sixHrStr
+    vals(11) = ""
+    vals(12) = ""
+    vals(13) = ""
+    vals(14) = ""
+    vals(15) = appLvl
+    vals(16) = ""
+    vals(17) = ""
+    vals(18) = ""
+    vals(19) = tLV
+    vals(20) = Round(tRev, 2)
+    vals(21) = avgDiscStr
+    vals(22) = Format(ovMP * 100, "0.00") & "%"
 
     Dim c As Long
     For c = 0 To 22
         ws.Cells(nextRow, c + 1).Value = vals(c)
     Next c
 
-    ' Colour-code the Approval Level cell (column 16)
     With ws.Cells(nextRow, 16)
         .Interior.Color = ApprovalColour(appLvl)
         .Font.Bold = True
     End With
 
-    ' Thin border on new row
     ws.Range(ws.Cells(nextRow, 1), ws.Cells(nextRow, 23)).Borders.LineStyle = xlContinuous
 End Sub

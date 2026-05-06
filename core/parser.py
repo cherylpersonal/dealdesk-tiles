@@ -7,7 +7,7 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _find_header_row(file, hint_cols: list, max_scan: int = 10) -> int:
+def _find_header_row(file, hint_cols: list, max_scan: int = 50) -> int:
     """Return the 0-based row index that contains the most hint_cols after normalisation."""
     preview = pd.read_excel(file, header=None, nrows=max_scan, dtype=str)
     best_row, best_score = 0, 0
